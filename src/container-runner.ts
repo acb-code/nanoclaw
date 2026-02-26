@@ -4,6 +4,7 @@
  */
 import { ChildProcess, exec, spawn } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import {
@@ -185,6 +186,16 @@ function buildVolumeMounts(
     containerPath: '/app/src',
     readonly: false,
   });
+
+  // Shared sim-workdir: available to all agents for reading and writing
+  const simWorkdir = path.join(os.homedir(), 'sim-workdir');
+  if (fs.existsSync(simWorkdir)) {
+    mounts.push({
+      hostPath: simWorkdir,
+      containerPath: '/workspace/sim-workdir',
+      readonly: false,
+    });
+  }
 
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
