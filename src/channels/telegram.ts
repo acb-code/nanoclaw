@@ -322,7 +322,11 @@ registerChannel('telegram', (opts) => {
   const token = process.env.TELEGRAM_BOT_TOKEN || envVars.TELEGRAM_BOT_TOKEN;
   if (!token) return null;
 
-  const poolTokens = (process.env.TELEGRAM_BOT_POOL || envVars.TELEGRAM_BOT_POOL || '')
+  const poolTokens = (
+    process.env.TELEGRAM_BOT_POOL ||
+    envVars.TELEGRAM_BOT_POOL ||
+    ''
+  )
     .split(',')
     .map((t) => t.trim())
     .filter(Boolean);
