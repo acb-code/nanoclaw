@@ -63,7 +63,9 @@ vi.mock('grammy', () => ({
   },
 }));
 
-import { TelegramChannel, TelegramChannelOpts } from './telegram.js';
+import { TelegramChannel } from './telegram.js';
+import { ChannelOpts } from './registry.js';
+type TelegramChannelOpts = ChannelOpts;
 
 // --- Test helpers ---
 

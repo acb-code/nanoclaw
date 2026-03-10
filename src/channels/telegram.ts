@@ -2,12 +2,8 @@ import { Api, Bot } from 'grammy';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { logger } from '../logger.js';
-import {
-  Channel,
-  OnChatMetadata,
-  OnInboundMessage,
-  RegisteredGroup,
-} from '../types.js';
+import { Channel } from '../types.js';
+import { ChannelOpts, registerChannel } from './registry.js';
 
 // Bot pool for agent teams: send-only Api instances (no polling)
 const poolApis: Api[] = [];
@@ -87,20 +83,14 @@ export async function sendPoolMessage(
   }
 }
 
-export interface TelegramChannelOpts {
-  onMessage: OnInboundMessage;
-  onChatMetadata: OnChatMetadata;
-  registeredGroups: () => Record<string, RegisteredGroup>;
-}
-
 export class TelegramChannel implements Channel {
   name = 'telegram';
 
   private bot: Bot | null = null;
-  private opts: TelegramChannelOpts;
+  private opts: ChannelOpts;
   private botToken: string;
 
-  constructor(botToken: string, opts: TelegramChannelOpts) {
+  constructor(botToken: string, opts: ChannelOpts) {
     this.botToken = botToken;
     this.opts = opts;
   }
@@ -318,3 +308,20 @@ export class TelegramChannel implements Channel {
     }
   }
 }
+
+registerChannel('telegram', (opts) => {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) return null;
+
+  const poolTokens = (process.env.TELEGRAM_BOT_POOL || '')
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean);
+  if (poolTokens.length > 0) {
+    initBotPool(poolTokens).catch((err) =>
+      logger.error({ err }, 'Failed to initialize Telegram bot pool'),
+    );
+  }
+
+  return new TelegramChannel(token, opts);
+});

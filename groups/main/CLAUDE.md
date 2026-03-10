@@ -119,13 +119,13 @@ sqlite3 /workspace/project/store/messages.db "
 
 ### Registered Groups Config
 
-Groups are registered in `/workspace/project/data/registered_groups.json`:
+Groups are registered in the SQLite `registered_groups` table:
 
 ```json
 {
   "1234567890-1234567890@g.us": {
     "name": "Family Chat",
-    "folder": "family-chat",
+    "folder": "whatsapp_family-chat",
     "trigger": "@Hydra",
     "added_at": "2024-01-31T12:00:00.000Z"
   }
@@ -133,32 +133,34 @@ Groups are registered in `/workspace/project/data/registered_groups.json`:
 ```
 
 Fields:
-- **Key**: The WhatsApp JID (unique identifier for the chat)
+- **Key**: The chat JID (unique identifier — WhatsApp, Telegram, Slack, Discord, etc.)
 - **name**: Display name for the group
-- **folder**: Folder name under `groups/` for this group's files and memory
+- **folder**: Channel-prefixed folder name under `groups/` for this group's files and memory
 - **trigger**: The trigger word (usually same as global, but could differ)
 - **requiresTrigger**: Whether `@trigger` prefix is needed (default: `true`). Set to `false` for solo/personal chats where all messages should be processed
+- **isMain**: Whether this is the main control group (elevated privileges, no trigger required)
 - **added_at**: ISO timestamp when registered
 
 ### Trigger Behavior
 
-- **Main group**: No trigger needed — all messages are processed automatically
+- **Main group** (`isMain: true`): No trigger needed — all messages are processed automatically
 - **Groups with `requiresTrigger: false`**: No trigger needed — all messages processed (use for 1-on-1 or solo chats)
 - **Other groups** (default): Messages must start with `@AssistantName` to be processed
 
 ### Adding a Group
 
 1. Query the database to find the group's JID
-2. Read `/workspace/project/data/registered_groups.json`
-3. Add the new group entry with `containerConfig` if needed
-4. Write the updated JSON back
-5. Create the group folder: `/workspace/project/groups/{folder-name}/`
-6. Optionally create an initial `CLAUDE.md` for the group
+2. Use the `register_group` MCP tool with the JID, name, folder, and trigger
+3. Optionally include `containerConfig` for additional mounts
+4. The group folder is created automatically: `/workspace/project/groups/{folder-name}/`
+5. Optionally create an initial `CLAUDE.md` for the group
 
-Example folder name conventions:
-- "Family Chat" → `family-chat`
-- "Work Team" → `work-team`
-- Use lowercase, hyphens instead of spaces
+Folder naming convention — channel prefix with underscore separator:
+- WhatsApp "Family Chat" → `whatsapp_family-chat`
+- Telegram "Dev Team" → `telegram_dev-team`
+- Discord "General" → `discord_general`
+- Slack "Engineering" → `slack_engineering`
+- Use lowercase, hyphens for the group name part
 
 #### Adding Additional Directories for a Group
 
@@ -186,6 +188,37 @@ Groups can have extra directories mounted. Add `containerConfig` to their entry:
 
 The directory will appear at `/workspace/extra/webapp` in that group's container.
 
+#### Sender Allowlist
+
+After registering a group, explain the sender allowlist feature to the user:
+
+> This group can be configured with a sender allowlist to control who can interact with me. There are two modes:
+>
+> - **Trigger mode** (default): Everyone's messages are stored for context, but only allowed senders can trigger me with @{AssistantName}.
+> - **Drop mode**: Messages from non-allowed senders are not stored at all.
+>
+> For closed groups with trusted members, I recommend setting up an allow-only list so only specific people can trigger me. Want me to configure that?
+
+If the user wants to set up an allowlist, edit `~/.config/nanoclaw/sender-allowlist.json` on the host:
+
+```json
+{
+  "default": { "allow": "*", "mode": "trigger" },
+  "chats": {
+    "<chat-jid>": {
+      "allow": ["sender-id-1", "sender-id-2"],
+      "mode": "trigger"
+    }
+  },
+  "logDenied": true
+}
+```
+
+Notes:
+- Your own messages (`is_from_me`) explicitly bypass the allowlist in trigger checks. Bot messages are filtered out by the database query before trigger evaluation, so they never reach the allowlist.
+- If the config file doesn't exist or is invalid, all senders are allowed (fail-open)
+- The config file is on the host at `~/.config/nanoclaw/sender-allowlist.json`, not inside the container
+
 ### Removing a Group
 
 1. Read `/workspace/project/data/registered_groups.json`
@@ -211,40 +244,3 @@ When scheduling tasks for other groups, use the `target_group_jid` parameter wit
 - `schedule_task(prompt: "...", schedule_type: "cron", schedule_value: "0 9 * * 1", target_group_jid: "120363336345536173@g.us")`
 
 The task will run in that group's context with access to their files and memory.
-
----
-
-## Agent Teams
-
-When creating a team to tackle a complex task, follow these rules:
-
-### CRITICAL: Follow the user's prompt exactly
-
-Create *exactly* the team the user asked for — same number of agents, same roles, same names. Do NOT add extra agents, rename roles, or use generic names like "Researcher 1". If the user says "a marine biologist, a physicist, and Alexander Hamilton", create exactly those three agents with those exact names.
-
-### Team member instructions
-
-Each team member MUST be instructed to:
-
-1. *Share progress in the group* via `mcp__nanoclaw__send_message` with a `sender` parameter matching their exact role/character name (e.g., `sender: "Marine Biologist"` or `sender: "Alexander Hamilton"`). This makes their messages appear from a dedicated bot in the Telegram group.
-2. *Also communicate with teammates* via `SendMessage` as normal for coordination.
-3. Keep group messages *short* — 2-4 sentences max per message. Break longer content into multiple `send_message` calls. No walls of text.
-4. Use the `sender` parameter consistently — always the same name so the bot identity stays stable.
-5. NEVER use markdown formatting. Use ONLY WhatsApp/Telegram formatting: single *asterisks* for bold (NOT **double**), _underscores_ for italic, • for bullets, ```backticks``` for code. No ## headings, no [links](url), no **double asterisks**.
-
-### Example team creation prompt
-
-When creating a teammate, include instructions like:
-
-```
-You are the Marine Biologist. When you have findings or updates for the user, send them to the group using mcp__nanoclaw__send_message with sender set to "Marine Biologist". Keep each message short (2-4 sentences max). Use emojis for strong reactions. ONLY use single *asterisks* for bold (never **double**), _underscores_ for italic, • for bullets. No markdown. Also communicate with teammates via SendMessage.
-```
-
-### Lead agent behavior
-
-As the lead agent who created the team:
-
-- You do NOT need to react to or relay every teammate message. The user sees those directly from the teammate bots.
-- Send your own messages only to comment, share thoughts, synthesize, or direct the team.
-- When processing an internal update from a teammate that doesn't need a user-facing response, wrap your *entire* output in `<internal>` tags.
-- Focus on high-level coordination and the final synthesis.
