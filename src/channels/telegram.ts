@@ -78,10 +78,10 @@ export async function sendPoolMessage(
     const numericId = chatId.replace(/^tg:/, '');
     const MAX_LENGTH = 4096;
     if (text.length <= MAX_LENGTH) {
-      await api.sendMessage(numericId, text);
+      await sendTelegramChunk(api, numericId, text);
     } else {
       for (let i = 0; i < text.length; i += MAX_LENGTH) {
-        await api.sendMessage(numericId, text.slice(i, i + MAX_LENGTH));
+        await sendTelegramChunk(api, numericId, text.slice(i, i + MAX_LENGTH));
       }
     }
     logger.info(
@@ -90,6 +90,33 @@ export async function sendPoolMessage(
     );
   } catch (err) {
     logger.error({ chatId, sender, err }, 'Failed to send pool message');
+  }
+}
+
+/**
+ * Send one Telegram chunk, preferring parse_mode: 'Markdown' so that
+ * *bold*, _italic_, [text](url), and `code` render natively. If the
+ * Markdown parser rejects the text (unbalanced markers, stray special
+ * chars), retry once as plain text so the message still gets through.
+ */
+async function sendTelegramChunk(
+  api: Api,
+  chatId: string,
+  text: string,
+): Promise<void> {
+  try {
+    await api.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+  } catch (err) {
+    const desc = (err as { description?: string })?.description ?? '';
+    if (/parse|entities|markdown/i.test(desc)) {
+      logger.debug(
+        { chatId, desc },
+        'Telegram Markdown parse failed, falling back to plain text',
+      );
+      await api.sendMessage(chatId, text);
+      return;
+    }
+    throw err;
   }
 }
 
@@ -275,10 +302,11 @@ export class TelegramChannel implements Channel {
       // Telegram has a 4096 character limit per message — split if needed
       const MAX_LENGTH = 4096;
       if (text.length <= MAX_LENGTH) {
-        await this.bot.api.sendMessage(numericId, text);
+        await sendTelegramChunk(this.bot.api, numericId, text);
       } else {
         for (let i = 0; i < text.length; i += MAX_LENGTH) {
-          await this.bot.api.sendMessage(
+          await sendTelegramChunk(
+            this.bot.api,
             numericId,
             text.slice(i, i + MAX_LENGTH),
           );
