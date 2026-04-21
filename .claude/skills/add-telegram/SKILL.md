@@ -39,7 +39,11 @@ git remote add telegram https://github.com/qwibitai/nanoclaw-telegram.git
 
 ```bash
 git fetch telegram main
-git merge telegram/main
+git merge telegram/main || {
+  git checkout --theirs package-lock.json
+  git add package-lock.json
+  git merge --continue
+}
 ```
 
 This merges in:
@@ -197,14 +201,6 @@ launchctl load ~/Library/LaunchAgents/com.nanoclaw.plist
 # npm run dev
 # systemctl --user start nanoclaw
 ```
-
-## Agent Swarms (Teams)
-
-After completing the Telegram setup, use `AskUserQuestion`:
-
-AskUserQuestion: Would you like to add Agent Swarm support? Without it, Agent Teams still work — they just operate behind the scenes. With Swarm support, each subagent appears as a different bot in the Telegram group so you can see who's saying what and have interactive team sessions.
-
-If they say yes, invoke the `/add-telegram-swarm` skill.
 
 ## Removal
 
