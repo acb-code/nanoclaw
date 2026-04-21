@@ -14,12 +14,15 @@ groups/*
 !groups/main/
 !groups/global/
 !groups/oas-analysis/
+!groups/pkm/
 groups/main/*
 groups/global/*
 groups/oas-analysis/*
+groups/pkm/*
 !groups/main/CLAUDE.md
 !groups/global/CLAUDE.md
 !groups/oas-analysis/CLAUDE.md
+!groups/pkm/CLAUDE.md
 
 # Secrets
 *.keys.json
