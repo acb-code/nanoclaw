@@ -2,7 +2,11 @@ import path from 'path';
 
 import { Api, Bot } from 'grammy';
 
-import { saveImage, saveRawFile, SavedAttachment } from '../attachments/image.js';
+import {
+  saveImage,
+  saveRawFile,
+  SavedAttachment,
+} from '../attachments/image.js';
 import {
   downloadTelegramFile,
   formatBytes,
@@ -314,7 +318,10 @@ export class TelegramChannel implements Channel {
             { chatJid, label, size: err.size },
             'Telegram attachment exceeds size cap',
           );
-          storeNonText(ctx, `[${label} (too large — ${formatBytes(err.size)})]${caption}`);
+          storeNonText(
+            ctx,
+            `[${label} (too large — ${formatBytes(err.size)})]${caption}`,
+          );
           return;
         }
         logger.error(
@@ -330,8 +337,11 @@ export class TelegramChannel implements Channel {
       const largest = photos[photos.length - 1];
       if (!largest) return;
       const baseName = `tg-photo-${ctx.message.message_id}-${ctx.message.date}`;
-      await downloadAndDeliver(ctx, largest.file_id, 'Photo', (buffer, groupDir) =>
-        saveImage(buffer, groupDir, baseName),
+      await downloadAndDeliver(
+        ctx,
+        largest.file_id,
+        'Photo',
+        (buffer, groupDir) => saveImage(buffer, groupDir, baseName),
       );
     });
 
@@ -346,8 +356,11 @@ export class TelegramChannel implements Channel {
         doc.file_name && doc.file_name.trim().length > 0
           ? path.basename(doc.file_name)
           : `tg-doc-${ctx.message.message_id}`;
-      await downloadAndDeliver(ctx, doc.file_id, 'Document', async (buffer, groupDir) =>
-        saveRawFile(buffer, groupDir, desiredName),
+      await downloadAndDeliver(
+        ctx,
+        doc.file_id,
+        'Document',
+        async (buffer, groupDir) => saveRawFile(buffer, groupDir, desiredName),
       );
     });
 

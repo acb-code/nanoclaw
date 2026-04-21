@@ -55,9 +55,9 @@ describe('telegram-download', () => {
   it('throws when getFile returns no file_path', async () => {
     const api = mockApi({ file_size: 100 });
 
-    await expect(
-      downloadTelegramFile(api, 'TOKEN', 'FILE-ID'),
-    ).rejects.toThrow(/no file_path/);
+    await expect(downloadTelegramFile(api, 'TOKEN', 'FILE-ID')).rejects.toThrow(
+      /no file_path/,
+    );
   });
 
   it('throws when fetch returns a non-ok response', async () => {
@@ -68,9 +68,9 @@ describe('telegram-download', () => {
       statusText: 'Not Found',
     });
 
-    await expect(
-      downloadTelegramFile(api, 'TOKEN', 'FILE-ID'),
-    ).rejects.toThrow(/404 Not Found/);
+    await expect(downloadTelegramFile(api, 'TOKEN', 'FILE-ID')).rejects.toThrow(
+      /404 Not Found/,
+    );
   });
 
   it('treats missing file_size as zero (under cap)', async () => {

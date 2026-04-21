@@ -574,9 +574,15 @@ describe('TelegramChannel', () => {
       // Minimal valid JPEG bytes (sharp can still process this).
       const jpegBuf = await (
         await import('sharp')
-      ).default({
-        create: { width: 50, height: 50, channels: 3, background: { r: 1, g: 2, b: 3 } },
-      })
+      )
+        .default({
+          create: {
+            width: 50,
+            height: 50,
+            channels: 3,
+            background: { r: 1, g: 2, b: 3 },
+          },
+        })
         .jpeg()
         .toBuffer();
       mockDownloadFile.mockResolvedValue({
@@ -614,9 +620,15 @@ describe('TelegramChannel', () => {
       fs.mkdirSync(path.join(fakeGroupDir, 'sources'));
       const jpegBuf = await (
         await import('sharp')
-      ).default({
-        create: { width: 50, height: 50, channels: 3, background: { r: 0, g: 0, b: 0 } },
-      })
+      )
+        .default({
+          create: {
+            width: 50,
+            height: 50,
+            channels: 3,
+            background: { r: 0, g: 0, b: 0 },
+          },
+        })
         .jpeg()
         .toBuffer();
       mockDownloadFile.mockResolvedValue({
@@ -641,9 +653,15 @@ describe('TelegramChannel', () => {
 
       const jpegBuf = await (
         await import('sharp')
-      ).default({
-        create: { width: 20, height: 20, channels: 3, background: { r: 0, g: 0, b: 0 } },
-      })
+      )
+        .default({
+          create: {
+            width: 20,
+            height: 20,
+            channels: 3,
+            background: { r: 0, g: 0, b: 0 },
+          },
+        })
         .jpeg()
         .toBuffer();
       mockDownloadFile.mockResolvedValue({
@@ -667,9 +685,8 @@ describe('TelegramChannel', () => {
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
-      const { TelegramFileTooLargeError } = await import(
-        '../attachments/telegram-download.js'
-      );
+      const { TelegramFileTooLargeError } =
+        await import('../attachments/telegram-download.js');
       mockDownloadFile.mockRejectedValue(
         new TelegramFileTooLargeError(25 * 1024 * 1024),
       );
