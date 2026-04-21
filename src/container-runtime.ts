@@ -26,6 +26,13 @@ export const PROXY_BIND_HOST =
 function detectProxyBindHost(): string {
   if (os.platform() === 'darwin') return '127.0.0.1';
   if (fs.existsSync('/proc/sys/fs/binfmt_misc/WSLInterop')) return '127.0.0.1';
+  // Some WSL2 kernels lack /proc/sys/fs/binfmt_misc/WSLInterop; fall back to /proc/version.
+  if (
+    fs.existsSync('/proc/version') &&
+    /microsoft/i.test(fs.readFileSync('/proc/version', 'utf-8'))
+  ) {
+    return '127.0.0.1';
+  }
   const docker0 = os.networkInterfaces()['docker0'];
   if (docker0) {
     const ipv4 = docker0.find((a) => a.family === 'IPv4');
