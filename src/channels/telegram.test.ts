@@ -1,3 +1,7 @@
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 
 // --- Mocks ---
@@ -17,6 +21,31 @@ vi.mock('../logger.js', () => ({
     error: vi.fn(),
   },
 }));
+
+// Per-test tmp dir used as the fake group workspace. telegram.ts resolves
+// the group folder via resolveGroupFolderPath(group.folder); we mock that
+// module to return our tmp dir so downloaded attachments land somewhere we
+// can inspect.
+let fakeGroupDir = '';
+vi.mock('../group-folder.js', () => ({
+  resolveGroupFolderPath: () => fakeGroupDir,
+  assertValidGroupFolder: () => {},
+  isValidGroupFolder: () => true,
+  resolveGroupIpcPath: (f: string) => f,
+}));
+
+// Mock the Telegram file download so tests don't need real network or
+// getFile responses. Each test can reconfigure the mock's behavior.
+const mockDownloadFile = vi.fn();
+vi.mock('../attachments/telegram-download.js', async () => {
+  const actual = await vi.importActual<
+    typeof import('../attachments/telegram-download.js')
+  >('../attachments/telegram-download.js');
+  return {
+    ...actual,
+    downloadTelegramFile: (...args: any[]) => mockDownloadFile(...args),
+  };
+});
 
 // --- Grammy mock ---
 
@@ -152,6 +181,8 @@ function createMediaCtx(overrides: {
       ...(overrides.extra || {}),
     },
     me: { username: 'andy_ai_bot' },
+    api: {},
+    reply: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -177,10 +208,16 @@ async function triggerMediaMessage(
 describe('TelegramChannel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    fakeGroupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nc-tg-'));
+    mockDownloadFile.mockReset();
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    if (fakeGroupDir && fs.existsSync(fakeGroupDir)) {
+      fs.rmSync(fakeGroupDir, { recursive: true, force: true });
+    }
+    fakeGroupDir = '';
   });
 
   // --- Connection lifecycle ---
@@ -529,32 +566,140 @@ describe('TelegramChannel', () => {
   // --- Non-text messages ---
 
   describe('non-text messages', () => {
-    it('stores photo with placeholder', async () => {
+    it('downloads photo and delivers path reference for registered group', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
-      const ctx = createMediaCtx({});
+      // Minimal valid JPEG bytes (sharp can still process this).
+      const jpegBuf = await (
+        await import('sharp')
+      ).default({
+        create: { width: 50, height: 50, channels: 3, background: { r: 1, g: 2, b: 3 } },
+      })
+        .jpeg()
+        .toBuffer();
+      mockDownloadFile.mockResolvedValue({
+        buffer: jpegBuf,
+        fileSize: jpegBuf.length,
+        filePath: 'photos/x.jpg',
+      });
+
+      const ctx = createMediaCtx({
+        messageId: 42,
+        extra: { photo: [{ file_id: 'SMALL' }, { file_id: 'LARGE' }] },
+      });
       await triggerMediaMessage('message:photo', ctx);
 
-      expect(opts.onMessage).toHaveBeenCalledWith(
-        'tg:100200300',
-        expect.objectContaining({ content: '[Photo]' }),
+      expect(mockDownloadFile).toHaveBeenCalledWith(
+        expect.any(Object),
+        'test-token',
+        'LARGE',
       );
+      const call = (opts.onMessage as any).mock.calls[0];
+      expect(call[0]).toBe('tg:100200300');
+      expect(call[1].content).toMatch(
+        /^\[Photo: attachments\/tg-photo-42-\d+\.jpg\]$/,
+      );
+      // The saved file should exist on disk where we told it to.
+      const relative = call[1].content.match(/\[Photo: (.+)\]/)![1];
+      expect(fs.existsSync(path.join(fakeGroupDir, relative))).toBe(true);
     });
 
-    it('stores photo with caption', async () => {
+    it('prefers sources/ over attachments/ for wiki-style groups', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
-      const ctx = createMediaCtx({ caption: 'Look at this' });
+      fs.mkdirSync(path.join(fakeGroupDir, 'sources'));
+      const jpegBuf = await (
+        await import('sharp')
+      ).default({
+        create: { width: 50, height: 50, channels: 3, background: { r: 0, g: 0, b: 0 } },
+      })
+        .jpeg()
+        .toBuffer();
+      mockDownloadFile.mockResolvedValue({
+        buffer: jpegBuf,
+        fileSize: jpegBuf.length,
+        filePath: 'photos/x.jpg',
+      });
+
+      const ctx = createMediaCtx({
+        extra: { photo: [{ file_id: 'LARGE' }] },
+      });
       await triggerMediaMessage('message:photo', ctx);
 
-      expect(opts.onMessage).toHaveBeenCalledWith(
-        'tg:100200300',
-        expect.objectContaining({ content: '[Photo] Look at this' }),
+      const call = (opts.onMessage as any).mock.calls[0];
+      expect(call[1].content).toMatch(/^\[Photo: sources\/tg-photo-/);
+    });
+
+    it('includes caption alongside photo reference', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const jpegBuf = await (
+        await import('sharp')
+      ).default({
+        create: { width: 20, height: 20, channels: 3, background: { r: 0, g: 0, b: 0 } },
+      })
+        .jpeg()
+        .toBuffer();
+      mockDownloadFile.mockResolvedValue({
+        buffer: jpegBuf,
+        fileSize: jpegBuf.length,
+        filePath: 'photos/x.jpg',
+      });
+
+      const ctx = createMediaCtx({
+        caption: 'Look at this',
+        extra: { photo: [{ file_id: 'LARGE' }] },
+      });
+      await triggerMediaMessage('message:photo', ctx);
+
+      const call = (opts.onMessage as any).mock.calls[0];
+      expect(call[1].content).toMatch(/ Look at this$/);
+    });
+
+    it('replies with oversize warning and skips save when file exceeds cap', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const { TelegramFileTooLargeError } = await import(
+        '../attachments/telegram-download.js'
       );
+      mockDownloadFile.mockRejectedValue(
+        new TelegramFileTooLargeError(25 * 1024 * 1024),
+      );
+
+      const ctx = createMediaCtx({
+        extra: { photo: [{ file_id: 'LARGE' }] },
+      });
+      await triggerMediaMessage('message:photo', ctx);
+
+      expect(ctx.reply).toHaveBeenCalledWith(
+        expect.stringMatching(/too large|exceeds|cap/i),
+      );
+      const call = (opts.onMessage as any).mock.calls[0];
+      expect(call[1].content).toMatch(/\[Photo \(too large/);
+    });
+
+    it('falls back to placeholder when download fails with a network error', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      mockDownloadFile.mockRejectedValue(new Error('network down'));
+
+      const ctx = createMediaCtx({
+        extra: { photo: [{ file_id: 'LARGE' }] },
+      });
+      await triggerMediaMessage('message:photo', ctx);
+
+      const call = (opts.onMessage as any).mock.calls[0];
+      expect(call[1].content).toBe('[Photo (download failed)]');
     });
 
     it('stores video with placeholder', async () => {
@@ -599,34 +744,78 @@ describe('TelegramChannel', () => {
       );
     });
 
-    it('stores document with filename', async () => {
+    it('downloads document preserving filename', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
+      mockDownloadFile.mockResolvedValue({
+        buffer: Buffer.from('%PDF-1.4 fake'),
+        fileSize: 13,
+        filePath: 'documents/report.pdf',
+      });
+
       const ctx = createMediaCtx({
-        extra: { document: { file_name: 'report.pdf' } },
+        extra: {
+          document: { file_id: 'DOC-ID', file_name: 'report.pdf' },
+        },
       });
       await triggerMediaMessage('message:document', ctx);
 
-      expect(opts.onMessage).toHaveBeenCalledWith(
-        'tg:100200300',
-        expect.objectContaining({ content: '[Document: report.pdf]' }),
+      expect(mockDownloadFile).toHaveBeenCalledWith(
+        expect.any(Object),
+        'test-token',
+        'DOC-ID',
       );
+      const call = (opts.onMessage as any).mock.calls[0];
+      expect(call[1].content).toBe('[Document: attachments/report.pdf]');
+      expect(
+        fs.existsSync(path.join(fakeGroupDir, 'attachments', 'report.pdf')),
+      ).toBe(true);
     });
 
-    it('stores document with fallback name when filename missing', async () => {
+    it('strips directory components from filename to prevent path traversal', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
-      const ctx = createMediaCtx({ extra: { document: {} } });
+      mockDownloadFile.mockResolvedValue({
+        buffer: Buffer.from('x'),
+        fileSize: 1,
+        filePath: 'documents/x',
+      });
+
+      const ctx = createMediaCtx({
+        extra: {
+          document: { file_id: 'DOC-ID', file_name: '../../../etc/passwd' },
+        },
+      });
       await triggerMediaMessage('message:document', ctx);
 
-      expect(opts.onMessage).toHaveBeenCalledWith(
-        'tg:100200300',
-        expect.objectContaining({ content: '[Document: file]' }),
-      );
+      const call = (opts.onMessage as any).mock.calls[0];
+      // path.basename strips the leading ../../../
+      expect(call[1].content).toBe('[Document: attachments/passwd]');
+    });
+
+    it('generates a fallback name when document has no filename', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      mockDownloadFile.mockResolvedValue({
+        buffer: Buffer.from('x'),
+        fileSize: 1,
+        filePath: 'documents/x',
+      });
+
+      const ctx = createMediaCtx({
+        messageId: 7,
+        extra: { document: { file_id: 'DOC-ID' } },
+      });
+      await triggerMediaMessage('message:document', ctx);
+
+      const call = (opts.onMessage as any).mock.calls[0];
+      expect(call[1].content).toBe('[Document: attachments/tg-doc-7]');
     });
 
     it('stores sticker with emoji', async () => {

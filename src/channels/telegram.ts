@@ -1,6 +1,15 @@
+import path from 'path';
+
 import { Api, Bot } from 'grammy';
 
+import { saveImage, saveRawFile, SavedAttachment } from '../attachments/image.js';
+import {
+  downloadTelegramFile,
+  formatBytes,
+  TelegramFileTooLargeError,
+} from '../attachments/telegram-download.js';
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
+import { resolveGroupFolderPath } from '../group-folder.js';
 import { logger } from '../logger.js';
 import { Channel } from '../types.js';
 import { readEnvFile } from '../env.js';
@@ -252,14 +261,96 @@ export class TelegramChannel implements Channel {
       });
     };
 
-    this.bot.on('message:photo', (ctx) => storeNonText(ctx, '[Photo]'));
+    const botToken = this.botToken;
+
+    // Shared download+deliver path for photo and document events.
+    // Resolves the group's attachment dir (sources/ for wiki groups,
+    // attachments/ otherwise), downloads via the Bot API, saves to disk,
+    // and delivers a `[Label: <relative-path>]<caption>` message so the
+    // agent can Read the file directly from its workspace.
+    const downloadAndDeliver = async (
+      ctx: any,
+      fileId: string,
+      label: 'Photo' | 'Document',
+      save: (buffer: Buffer, groupDir: string) => Promise<SavedAttachment>,
+    ): Promise<void> => {
+      const chatJid = `tg:${ctx.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) return;
+
+      const caption = ctx.message.caption ? ` ${ctx.message.caption}` : '';
+
+      try {
+        const groupDir = resolveGroupFolderPath(group.folder);
+        const { buffer, fileSize } = await downloadTelegramFile(
+          ctx.api,
+          botToken,
+          fileId,
+        );
+        const saved = await save(buffer, groupDir);
+        const placeholder = `[${label}: ${saved.relativePath}]`;
+        storeNonText(ctx, `${placeholder}${caption}`);
+        logger.info(
+          {
+            chatJid,
+            label,
+            relativePath: saved.relativePath,
+            fileSize,
+          },
+          'Telegram attachment downloaded',
+        );
+      } catch (err) {
+        if (err instanceof TelegramFileTooLargeError) {
+          const message =
+            `⚠️ ${label} is ${formatBytes(err.size)}, which exceeds ` +
+            `Telegram Bot API's ${formatBytes(20 * 1024 * 1024)} download cap. ` +
+            `Drop the file into groups/${group.folder}/sources/ manually.`;
+          try {
+            await ctx.reply(message);
+          } catch (replyErr) {
+            logger.warn({ replyErr }, 'Failed to send oversize-file notice');
+          }
+          logger.warn(
+            { chatJid, label, size: err.size },
+            'Telegram attachment exceeds size cap',
+          );
+          storeNonText(ctx, `[${label} (too large — ${formatBytes(err.size)})]${caption}`);
+          return;
+        }
+        logger.error(
+          { chatJid, label, err },
+          'Telegram attachment download failed',
+        );
+        storeNonText(ctx, `[${label} (download failed)]${caption}`);
+      }
+    };
+
+    this.bot.on('message:photo', async (ctx) => {
+      const photos = ctx.message.photo || [];
+      const largest = photos[photos.length - 1];
+      if (!largest) return;
+      const baseName = `tg-photo-${ctx.message.message_id}-${ctx.message.date}`;
+      await downloadAndDeliver(ctx, largest.file_id, 'Photo', (buffer, groupDir) =>
+        saveImage(buffer, groupDir, baseName),
+      );
+    });
+
     this.bot.on('message:video', (ctx) => storeNonText(ctx, '[Video]'));
     this.bot.on('message:voice', (ctx) => storeNonText(ctx, '[Voice message]'));
     this.bot.on('message:audio', (ctx) => storeNonText(ctx, '[Audio]'));
-    this.bot.on('message:document', (ctx) => {
-      const name = ctx.message.document?.file_name || 'file';
-      storeNonText(ctx, `[Document: ${name}]`);
+
+    this.bot.on('message:document', async (ctx) => {
+      const doc = ctx.message.document;
+      if (!doc) return;
+      const desiredName =
+        doc.file_name && doc.file_name.trim().length > 0
+          ? path.basename(doc.file_name)
+          : `tg-doc-${ctx.message.message_id}`;
+      await downloadAndDeliver(ctx, doc.file_id, 'Document', async (buffer, groupDir) =>
+        saveRawFile(buffer, groupDir, desiredName),
+      );
     });
+
     this.bot.on('message:sticker', (ctx) => {
       const emoji = ctx.message.sticker?.emoji || '';
       storeNonText(ctx, `[Sticker ${emoji}]`);
