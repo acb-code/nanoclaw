@@ -1,17 +1,17 @@
 ---
 name: add-telegram-attachments
-description: Add photo and PDF/document attachment handling to the Telegram channel. Downloads files to the group's sources/ or attachments/ directory and delivers path references the agent can read. Includes Anthropic's official pdf skill for long-PDF extraction.
+description: Add photo and document attachment handling to the Telegram channel. Downloads files to the group's sources/ or attachments/ directory, resizes photos for token efficiency, and delivers path references the agent can read.
 ---
 
 # Add Telegram Attachments
 
-By default the Telegram channel stores photos and documents as placeholder text (`[Photo]`, `[Document: filename]`) — the actual files never reach the agent. This skill replaces those handlers with download-to-disk logic, adds an image-resize helper for token efficiency, and ships Anthropic's official `pdf` container skill for extracting text from long PDFs.
+By default the Telegram channel stores photos and documents as placeholder text (`[Photo]`, `[Document: filename]`) — the actual files never reach the agent. This skill replaces those handlers with download-to-disk logic and adds a sharp-backed image-resize helper so photo-token cost stays bounded.
 
 After installation:
 
 - Photos are resized to 1024×1024 JPEG and saved under the group's `sources/` (wiki groups) or `attachments/` (regular groups) directory.
 - Documents (PDFs, Office files, text, etc.) are saved verbatim under the same directory, preserving the original filename.
-- The agent receives `[Photo: sources/tg-photo-42-….jpg]` / `[Document: sources/paper.pdf]` references and can `Read` or invoke the `pdf` skill on them.
+- The agent receives `[Photo: sources/tg-photo-42-….jpg]` / `[Document: sources/paper.pdf]` references and can `Read` them directly from its workspace.
 - Files larger than Telegram's Bot API cap (20 MB) trigger a clear reply to the sender instead of silently failing.
 
 ## Phase 1: Pre-flight
@@ -64,8 +64,6 @@ This merges in:
 - Updated `src/channels/telegram.ts` photo + document handlers
 - Updated `src/channels/telegram.test.ts` coverage
 - `sharp` added to `package.json`
-- `container/Dockerfile` — installs `poppler-utils`, `qpdf`, `python3`, and a venv with `pypdf`, `pdfplumber`, `reportlab`
-- `container/skills/pdf/` — Anthropic's official pdf skill (vendored from [anthropics/skills](https://github.com/anthropics/skills))
 
 If the merge reports conflicts, resolve them by reading the conflicted files and understanding the intent of both sides.
 
@@ -81,7 +79,7 @@ All tests must pass before proceeding.
 
 ## Phase 3: Rebuild container and restart
 
-Because this changes the container image (new system packages, Python venv, and the vendored pdf skill), a full rebuild is required. Cached layers do NOT pick up the new apt packages.
+The merge adds `sharp`, which is a native dependency. A container rebuild is required.
 
 ```bash
 ./container/build.sh
@@ -112,9 +110,11 @@ Expect a file like `tg-photo-<msgid>-<timestamp>.jpg`.
 ### Send a PDF
 
 Send a PDF (≤20 MB) as a document. The agent should:
+
 1. See the `[Document: sources/<name>.pdf]` reference in the incoming message
-2. Read the file directly with its `Read` tool for short PDFs (≤10 pages)
-3. Invoke the `pdf` skill for longer PDFs — that skill uses `pypdf` / `pdfplumber` / `pdftotext` to extract full text
+2. `Read` the file directly — Claude Code's `Read` tool handles PDFs natively (up to 10 pages; use the `pages` parameter for longer documents, e.g. `pages: "1-10"`, `"11-20"`)
+
+For very long PDFs beyond practical page-chunking, consider adding a dedicated pdf-extraction container skill as follow-up work (use `pdftotext` from `poppler-utils` or Python's `pypdf` under their own licenses — do not vendor Anthropic's proprietary `pdf` skill).
 
 ### Check logs
 
@@ -123,6 +123,7 @@ tail -50 logs/nanoclaw.log | grep -i 'Telegram attachment'
 ```
 
 Look for:
+
 - `Telegram attachment downloaded` — happy path
 - `Telegram attachment exceeds size cap` — oversize rejected with user reply
 - `Telegram attachment download failed` — unexpected error, placeholder delivered
@@ -137,22 +138,9 @@ Workaround for large files: drop them into `groups/<folder>/sources/` directly v
 
 ### Agent doesn't "see" the photo
 
-The agent now has to `Read` the file explicitly. For interactive chat, remind it: "There's a photo at `sources/tg-photo-…jpg` — take a look."
+The agent has to `Read` the file explicitly. For interactive chat, remind it: "There's a photo at `sources/tg-photo-…jpg` — take a look."
 
 For wiki-style groups, the group's CLAUDE.md should tell the agent to Read any `[Photo: …]` or `[Document: …]` reference it sees.
-
-### pdf skill not invoked for long PDFs
-
-The agent picks skills via description. If the agent is using `Read` and hitting the 10-page cap, point it at the `pdf` skill: "Use the pdf skill to extract the full text."
-
-### Container build fails on apt-get
-
-The Dockerfile adds `poppler-utils`, `qpdf`, and Python. If your base image mirror is stale, run:
-
-```bash
-docker buildx prune -f
-./container/build.sh
-```
 
 ### Sharp install fails
 
@@ -173,7 +161,7 @@ npm rebuild sharp --platform=linux --arch=x64
 
 ## Design Notes
 
-- **No agent-runner or `src/index.ts` changes.** The feature is confined to the Telegram channel plus two new helper modules and one vendored container skill. No plumbing touches core message dispatch.
+- **No agent-runner or `src/index.ts` changes.** The feature is confined to the Telegram channel plus a small `src/attachments/` helper module.
 - **No base64 content-block pipeline.** Photos are saved to disk and referenced by path. The agent uses `Read` to view them — matches the Claude Code norm and keeps the container surface small. For chat UX where images should be "always visible," a separate skill can add the content-block pipeline later.
 - **Voice and video stay as placeholders.** Handling those requires Whisper (voice) or ffmpeg (video frames) — intentionally out of scope. A follow-up `add-telegram-voice` skill can extend this pattern.
 - **Why `sources/` first, `attachments/` fallback.** Wiki groups use `sources/` as a durable artifact store per the Karpathy LLM-Wiki pattern. Non-wiki groups don't have that directory, so `attachments/` serves as a generic drop zone.
